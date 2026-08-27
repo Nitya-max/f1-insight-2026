@@ -1,83 +1,71 @@
 import os
+import requests
 import pandas as pd
-import fastf1
 
 os.makedirs("data/raw", exist_ok=True)
-os.makedirs("data/cache", exist_ok=True)
-fastf1.Cache.enable_cache("data/cache")
+output_file = "data/raw/historical_f1_races.csv"
 
-output_path = "data/raw/historical_f1_races.csv"
+print("🏎️ Fetching bulk F1 race results via Jolpica API...")
 
-# Check what years already exist in the file
-if os.path.exists(output_path):
-    existing_df = pd.read_csv(output_path)
-    completed_years = existing_df['year'].unique().tolist()
-    print(f"📁 Existing data found for seasons: {completed_years}")
-else:
-    existing_df = pd.DataFrame()
-    completed_years = []
+headers = {"User-Agent": "F1InsightApp/1.0"}
+all_records = []
 
-target_years = [2022, 2023, 2024, 2025, 2026]
-years_to_download = [y for y in target_years if y not in completed_years]
-
-if not years_to_download:
-    print("✅ All target seasons (2022-2026) are already downloaded!")
-    exit()
-
-print(f"🏎️ Downloading missing seasons: {years_to_download}...")
-
-new_race_data = []
-
-for year in years_to_download:
-    print(f"\n================ Season {year} ================")
-    try:
-        schedule = fastf1.get_event_schedule(year)
-    except Exception as err:
-        print(f"⚠️ Schedule unavailable for {year}: {err}")
-        continue
-
-    for _, event in schedule.iterrows():
-        round_num = event['RoundNumber']
-        event_name = event['EventName']
-        location = event['Location']
-
-        if round_num == 0:
-            continue
-
+# Fetch full seasons (2022 to 2026) using bulk pagination
+for year in range(2022, 2027):
+    offset = 0
+    limit = 100
+    season_races_loaded = 0
+    
+    while True:
+        url = f"https://api.jolpi.ca/ergast/f1/{year}/results.json?limit={limit}&offset={offset}"
         try:
-            session = fastf1.get_session(year, round_num, 'R')
-            # Fast download: skips heavy telemetry channels
-            session.load(telemetry=False, weather=False, messages=False)
+            response = requests.get(url, headers=headers, timeout=15)
+            if response.status_code != 200:
+                print(f"⚠️ Could not load season {year} (Status: {response.status_code})")
+                break
+                
+            data = response.json()
+            mr_data = data.get('MRData', {})
+            total = int(mr_data.get('total', 0))
+            races = mr_data.get('RaceTable', {}).get('Races', [])
             
-            results = session.results
-            if results is None or results.empty:
-                continue
+            if not races:
+                break
 
-            for _, driver in results.iterrows():
-                new_race_data.append({
-                    'year': int(year),
-                    'round': int(round_num),
-                    'race_name': str(event_name),
-                    'circuit': str(location),
-                    'driver_code': str(driver.get('Abbreviation', '')),
-                    'driver_name': str(driver.get('FullName', '')),
-                    'team': str(driver.get('TeamName', '')),
-                    'grid': driver.get('GridPosition', 20),
-                    'finish_position': driver.get('ClassifiedPosition', 20),
-                    'points': driver.get('Points', 0),
-                    'status': str(driver.get('Status', ''))
-                })
+            for race in races:
+                round_num = int(race.get('round', 0))
+                race_name = race.get('raceName', '')
+                circuit_name = race.get('Circuit', {}).get('circuitName', '')
+                
+                for result in race.get('Results', []):
+                    driver = result.get('Driver', {})
+                    constructor = result.get('Constructor', {})
+                    
+                    all_records.append({
+                        'year': year,
+                        'round': round_num,
+                        'race_name': race_name,
+                        'circuit': circuit_name,
+                        'driver_code': driver.get('code', driver.get('driverId', '')[:3].upper()),
+                        'driver_name': f"{driver.get('givenName', '')} {driver.get('familyName', '')}".strip(),
+                        'team': constructor.get('name', ''),
+                        'grid': int(result.get('grid', 20)),
+                        'finish_position': int(result.get('position', 20)) if str(result.get('position', '')).isdigit() else 20,
+                        'points': float(result.get('points', 0.0)),
+                        'status': result.get('status', 'Finished')
+                    })
+            
+            season_races_loaded += len(races)
+            offset += limit
+            if offset >= total:
+                break
+        except Exception as e:
+            print(f"⚠️ Error on season {year}: {e}")
+            break
+            
+    if season_races_loaded > 0:
+        print(f"✓ Season {year}: Loaded successfully")
 
-            print(f"✓ Downloaded: {year} R{round_num:02d} | {event_name}")
-        except Exception:
-            continue
-
-# Combine existing and new data
-if new_race_data:
-    new_df = pd.DataFrame(new_race_data)
-    final_df = pd.concat([existing_df, new_df], ignore_index=True)
-else:
-    final_df = existing_df
-
-final_df.to_csv(output_path, index=False)
-print(f"\n✅ All done! Total race records in '{output_path}': {len(final_df)}")
+df = pd.DataFrame(all_records)
+df.to_csv(output_file, index=False)
+print(f"\n✅ Finished! Saved {len(df)} total records to '{output_file}'")
