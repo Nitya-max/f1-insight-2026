@@ -1,0 +1,14 @@
+# Python bytecode & environments
+__pycache__/
+*.py[cod]
+.venv/
+env/
+venv/
+
+# FastF1 cache & temporary downloads (Keep repository fast & light)
+data/cache/
+*.pkl
+
+# OS specific files
+.DS_Store
+Thumbs.db
